@@ -12,6 +12,8 @@ License: BSD
 
 from __future__ import print_function
 
+import concurrent.futures
+from concurrent.futures import ProcessPoolExecutor
 from itertools import combinations, permutations
 import logging
 
@@ -81,6 +83,132 @@ def _init_estimate(node_size, **kwargs):
 
     return (g, sep_set, fixed_edges)
 
+def _estimate_skeleton_step(candidates, g, indep_test_func, data_matrix, alpha,
+                            l, **kwargs):
+    """Conduct conditional independence test for the given edges.
+
+    Args:
+        candidates: a list of edges to be tested.
+        g: the latest skeleton graph (as a networkx.Graph).
+        indep_test_func: the function name for a conditional
+            independency test.
+        data_matrix: data (as a numpy array).
+        alpha: the significance level.
+        l: the length of separation set in this step.
+        kwargs: parameters for the indep_test_func.
+    Returns:
+        has_test: whether there is a node has at least l + 1 neighbors.
+        sep_set: a separation set (as a map from an edge tuple to set()).
+        remove_edges: a set of edges to be removed after this iteration.
+    """
+    has_test = False
+    sep_set = {}
+    remove_edges = set()
+    for (i, j) in candidates:
+        adj_i = list(g.neighbors(i))
+        if j not in adj_i:
+            continue
+
+        adj_i.remove(j)
+        if len(adj_i) >= l:
+            _logger.debug('testing %s and %s', i, j)
+            _logger.debug('neighbors of %s are %s', i, adj_i)
+            for k in combinations(adj_i, l):
+                _logger.debug('indep prob of %s and %s with subset %s',
+                              i, j, k)
+                p_val = indep_test_func(data_matrix, i, j, set(k),
+                                        **kwargs)
+                _logger.debug('p_val is %s', p_val)
+                if p_val > alpha:
+                    _logger.debug('p: remove edge (%s, %s)', i, j)
+                    remove_edges.add((i, j))
+                    sep_set[(i, j)] = sep_set.get((i, j), set()) | set(k)
+                    sep_set[(j, i)] = sep_set.get((j, i), set()) | set(k)
+                    break
+            has_test = True
+
+    return (has_test, sep_set, remove_edges)
+
+def estimate_skeleton_parallel(indep_test_func, data_matrix, alpha, **kwargs):
+    """Estimate a skeleton graph from the statistis information.
+
+    Use stable-PC algorithm (see [Colombo2014]) and
+    conduct conditional independence test in parallel.
+
+    Args:
+        indep_test_func: the function name for a conditional
+            independency test.
+        data_matrix: data (as a numpy array).
+        alpha: the significance level.
+        kwargs:
+            'max_reach': maximum value of l (see the code).  The
+                value depends on the underlying distribution.
+            'init_graph': initial structure of skeleton graph
+                (as a networkx.Graph). If not specified,
+                a complete graph is used.
+            'fixed_edges': Undirected edges marked here are not changed
+                (as a networkx.Graph). If not specified,
+                an empty graph is used.
+            'num_cores': Specifies the number of cores to be used.
+            other parameters may be passed depending on the
+                indep_test_func()s.
+    Returns:
+        g: a skeleton graph (as a networkx.Graph).
+        sep_set: a separation set (as an 2D-array of set()).
+
+    [Colombo2014] Diego Colombo and Marloes H Maathuis. Order-independent
+    constraint-based causal structure learning. In The Journal of Machine
+    Learning Research, Vol. 15, pp. 3741-3782, 2014.
+    """
+    node_size = data_matrix.shape[1]
+    node_ids = range(node_size)
+    (g, sep_set, fixed_edges) = _init_estimate(node_size)
+
+    num_cores = kwargs.get('num_cores', 1)
+    if not isinstance(num_cores, int):
+        raise ValueError('num_cores is expected to be an integer')
+    num_cores = min(num_cores, 1)
+    # To partition (i, j) and (j, i) in the same group,
+    # here we use combinations, instead of permutations
+    candidates = list(set(combinations(node_ids, 2)) - fixed_edges)
+    partition_size = int(len(candidates) / num_cores) + 1
+    partitions = []
+    for k in range(num_cores):
+        partitions.append([])
+        start = k * partition_size
+        end = start + partition_size
+        for i, j in candidates[start: end]:
+            partitions[k].append((i, j))
+            partitions[k].append((j, i))
+
+    l = 0
+    while True:
+        cont = True
+        remove_edges = set()
+        with ProcessPoolExecutor(max_workers=num_cores) as executor:
+            tasks = []
+            for partition in partitions:
+                task = executor.submit(_estimate_skeleton_step, partition, g,
+                                       indep_test_func, data_matrix, alpha, l,
+                                       **kwargs)
+                tasks.append(task)
+
+            for item in concurrent.futures.as_completed(tasks):
+                (has_test, sep_set_step, remove_edges_step) = item.result()
+                cont &= has_test
+                for (i, j) in sep_set_step:
+                    sep_set[i][j] |= sep_set_step[(i, j)]
+                remove_edges.update(remove_edges_step)
+
+        l += 1
+        g.remove_edges_from(remove_edges)
+        if cont is False:
+            break
+        if ('max_reach' in kwargs) and (l > kwargs['max_reach']):
+            break
+
+    return (g, sep_set)
+
 def estimate_skeleton(indep_test_func, data_matrix, alpha, **kwargs):
     """Estimate a skeleton graph from the statistis information.
 
@@ -100,6 +228,8 @@ def estimate_skeleton(indep_test_func, data_matrix, alpha, **kwargs):
             'fixed_edges': Undirected edges marked here are not changed
                 (as a networkx.Graph). If not specified,
                 an empty graph is used.
+            'num_cores': Specifies the number of cores to be used for
+                parallel estimation of skeleton.
             other parameters may be passed depending on the
                 indep_test_func()s.
     Returns:

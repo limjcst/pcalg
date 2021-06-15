@@ -2,6 +2,8 @@
 '''
 Test suite for pcalg
 '''
+import datetime
+
 import networkx as nx
 import numpy as np
 
@@ -12,6 +14,7 @@ import pytest
 
 from pcalg import estimate_cpdag
 from pcalg import estimate_skeleton
+from pcalg import estimate_skeleton_parallel
 
 @pytest.mark.parametrize(('indep_test_func', 'data_matrix', 'g_answer'), [
     (ci_test_bin, np.array(bin_data).reshape((5000, 5)), nx.DiGraph({
@@ -69,3 +72,35 @@ def test_fixed_edges():
                                    alpha=0.01,
                                    fixed_edges=fixed_edges)
     assert graph.has_edge(1, 2), graph.edges
+
+@pytest.mark.parametrize(('indep_test_func', 'data_matrix'), [
+    (ci_test_bin, np.array(bin_data).reshape((1000, 25))),
+    (ci_test_dis, np.array(dis_data).reshape((2000, 25))),
+])
+def test_parallel_estimate_skeleton(indep_test_func, data_matrix, alpha=0.01):
+    '''
+    estimate_skeleton_parallel should be faithful to stable estimate_skeleton
+    '''
+    start = datetime.datetime.now()
+    (graph, sep_set) = estimate_skeleton(indep_test_func=indep_test_func,
+                                         data_matrix=data_matrix,
+                                         alpha=alpha,
+                                         method='stable')
+    print('Duration of stable estimate_skeleton:',
+          datetime.datetime.now() - start)
+    start = datetime.datetime.now()
+    result = estimate_skeleton_parallel(indep_test_func=indep_test_func,
+                                        data_matrix=data_matrix,
+                                        alpha=alpha,
+                                        num_cores=4)
+    print('Duration of estimate_skeleton_parallel:',
+          datetime.datetime.now() - start)
+
+    assert len(result) == 2
+    assert nx.is_isomorphic(graph, result[0])
+    sep_set_parallel = result[1]
+    assert len(sep_set) == len(sep_set_parallel)
+    for i, sep_set_i in enumerate(sep_set):
+        assert len(sep_set_i) == len(sep_set_parallel[i])
+        for j, sep_set_ij in enumerate(sep_set_i):
+            assert sep_set_ij == sep_set_parallel[i][j]
