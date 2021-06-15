@@ -34,6 +34,53 @@ def _create_complete_graph(node_ids):
         g.add_edge(i, j)
     return g
 
+def _init_estimate(node_size, **kwargs):
+    """Initiate settings for estimate_skeleton
+
+    Args:
+        indep_test_func: the function name for a conditional
+            independency test.
+        node_size: the dimension of data.
+        kwargs:
+            'init_graph': initial structure of skeleton graph
+                (as a networkx.Graph). If not specified,
+                a complete graph is used.
+            'fixed_edges': Undirected edges marked here are not changed
+                (as a networkx.Graph). If not specified,
+                an empty graph is used.
+    Returns:
+        g: a skeleton graph (as a networkx.Graph).
+        sep_set: a separation set (as an 2D-array of set()).
+        fixed_edges: a set of fixed edges (as a set of edge tuples)
+    """
+    node_ids = range(node_size)
+    sep_set = [[set() for i in range(node_size)] for j in range(node_size)]
+    if 'init_graph' in kwargs:
+        g = kwargs['init_graph']
+        if not isinstance(g, nx.Graph):
+            raise ValueError
+        elif not g.number_of_nodes() == len(node_ids):
+            raise ValueError('init_graph not matching data_matrix shape')
+        for (i, j) in combinations(node_ids, 2):
+            if not g.has_edge(i, j):
+                sep_set[i][j] = None
+                sep_set[j][i] = None
+    else:
+        g = _create_complete_graph(node_ids)
+
+    fixed_edges = set()
+    if 'fixed_edges' in kwargs:
+        _fixed_edges = kwargs['fixed_edges']
+        if not isinstance(_fixed_edges, nx.Graph):
+            raise ValueError
+        if not _fixed_edges.number_of_nodes() == len(node_ids):
+            raise ValueError('fixed_edges not matching data_matrix shape')
+        for (i, j) in _fixed_edges.edges:
+            fixed_edges.add((i, j))
+            fixed_edges.add((j, i))
+
+    return (g, sep_set, fixed_edges)
+
 def estimate_skeleton(indep_test_func, data_matrix, alpha, **kwargs):
     """Estimate a skeleton graph from the statistis information.
 
@@ -67,32 +114,9 @@ def estimate_skeleton(indep_test_func, data_matrix, alpha, **kwargs):
     def method_stable(kwargs):
         return ('method' in kwargs) and kwargs['method'] == "stable"
 
-    node_ids = range(data_matrix.shape[1])
     node_size = data_matrix.shape[1]
-    sep_set = [[set() for i in range(node_size)] for j in range(node_size)]
-    if 'init_graph' in kwargs:
-        g = kwargs['init_graph']
-        if not isinstance(g, nx.Graph):
-            raise ValueError
-        elif not g.number_of_nodes() == len(node_ids):
-            raise ValueError('init_graph not matching data_matrix shape')
-        for (i, j) in combinations(node_ids, 2):
-            if not g.has_edge(i, j):
-                sep_set[i][j] = None
-                sep_set[j][i] = None
-    else:
-        g = _create_complete_graph(node_ids)
-
-    fixed_edges = set()
-    if 'fixed_edges' in kwargs:
-        _fixed_edges = kwargs['fixed_edges']
-        if not isinstance(_fixed_edges, nx.Graph):
-            raise ValueError
-        if not _fixed_edges.number_of_nodes() == len(node_ids):
-            raise ValueError('fixed_edges not matching data_matrix shape')
-        for (i, j) in _fixed_edges.edges:
-            fixed_edges.add((i, j))
-            fixed_edges.add((j, i))
+    node_ids = range(node_size)
+    (g, sep_set, fixed_edges) = _init_estimate(node_size, **kwargs)
 
     l = 0
     while True:
